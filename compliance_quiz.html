@@ -1,0 +1,853 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>コンプライアンスクイズ</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Yu Gothic", "Meiryo", sans-serif; }
+  .fade-in { animation: fadeIn .25s ease-out; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+  .choice-btn { transition: all .15s ease; }
+  .choice-btn:hover:not(:disabled) { transform: translateY(-1px); }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+</style>
+</head>
+<body class="bg-slate-50 text-slate-800 min-h-screen">
+
+<div id="app" class="min-h-screen flex flex-col"></div>
+
+<script>
+/* ============================================================
+   設定: https://script.google.com/a/macros/sevenrich.jp/s/AKfycbyODfyFHIQBVrR8TnVHMqgTVxO4Y2c6ox-_Sql2DL7G2cOu7zY_duZ4GBoBeEV6SVh9Tw/exec   (デプロイ手順は「セットアップ手順.md」を参照)
+============================================================ */
+const GAS_URL = "https://script.google.com/a/macros/sevenrich.jp/s/AKfycbyODfyFHIQBVrR8TnVHMqgTVxO4Y2c6ox-_Sql2DL7G2cOu7zY_duZ4GBoBeEV6SVh9Tw/exec";
+
+/* ============================================================
+   状態管理
+============================================================ */
+const state = {
+  view: "loading",          // loading | setupNeeded | error | start | quiz | freetext | result | adminLogin | adminDashboard
+  errorMessage: "",
+  quiz: null,                // { title, description, questions, shuffleQuestions }
+  respondent: { name: "", department: "" },
+  order: [],                 // 出題順(質問インデックスの配列)
+  currentIndex: 0,
+  answers: [],                // { questionId, question, choices, selectedIndex, selectedText, correct }
+  selectedIndex: null,
+  showFeedback: false,
+  freeText1: "",
+  freeText2: "",
+  submitting: false,
+  submitError: "",
+  admin: {
+    password: "",
+    loginError: "",
+    loggingIn: false,
+    data: null,               // getAdminData_ のレスポンス
+    tab: "responses",         // responses | questions | settings
+    editQuestions: null,      // 編集中の設問配列
+    settingsDraft: null,
+    savingQuestions: false,
+    savingSettings: false,
+    saveMessage: "",
+    expandedResponse: null
+  }
+};
+
+function render() {
+  const app = document.getElementById("app");
+  app.innerHTML = "";
+  app.appendChild(Views[state.view] ? Views[state.view]() : Views.error());
+}
+
+function el(html) {
+  const t = document.createElement("template");
+  t.innerHTML = html.trim();
+  return t.content.firstElementChild;
+}
+
+function escapeHtml(s) {
+  return String(s ?? "").replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+  }[c]));
+}
+
+/* ============================================================
+   API 呼び出し
+============================================================ */
+function isGasConfigured() {
+  return typeof GAS_URL === "string" && GAS_URL.indexOf("https://script.google.com") === 0;
+}
+
+async function apiGet(params) {
+  const url = GAS_URL + "?" + new URLSearchParams(params).toString();
+  const res = await fetch(url, { method: "GET" });
+  if (!res.ok) throw new Error("HTTPエラー: " + res.status);
+  return res.json();
+}
+
+// Apps Script への POST はプリフライトを避けるため Content-Type を指定しない
+async function apiPost(body) {
+  const res = await fetch(GAS_URL, { method: "POST", body: JSON.stringify(body) });
+  if (!res.ok) throw new Error("HTTPエラー: " + res.status);
+  return res.json();
+}
+
+/* ============================================================
+   初期ロード
+============================================================ */
+async function loadQuiz() {
+  if (!isGasConfigured()) {
+    state.view = "setupNeeded";
+    render();
+    return;
+  }
+  state.view = "loading";
+  render();
+  try {
+    const data = await apiGet({ action: "questions" });
+    if (!data.ok) throw new Error(data.error || "取得に失敗しました");
+    state.quiz = data;
+    state.order = data.questions.map((_, i) => i);
+    if (data.shuffleQuestions) shuffleArray(state.order);
+    state.view = "start";
+  } catch (err) {
+    state.errorMessage = "設問の読み込みに失敗しました。ネットワーク接続を確認して、再読み込みしてください。(" + err.message + ")";
+    state.view = "error";
+  }
+  render();
+}
+
+function shuffleArray(arr) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+}
+
+/* ============================================================
+   画面: 共通レイアウト
+============================================================ */
+function pageShell(innerHtmlNode, opts = {}) {
+  const wrap = el(`
+    <div class="flex-1 flex flex-col">
+      <header class="border-b border-slate-200 bg-white">
+        <div class="max-w-3xl mx-auto px-4 py-4 flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <div class="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center text-white font-bold text-sm">C</div>
+            <span class="font-semibold text-slate-700">${escapeHtml(state.quiz?.title || "コンプライアンスクイズ")}</span>
+          </div>
+          <div></div>
+        </div>
+      </header>
+      <main class="flex-1 max-w-3xl w-full mx-auto px-4 py-8"></main>
+      <footer class="text-center text-xs text-slate-400 py-6"></footer>
+    </div>
+  `);
+  wrap.querySelector("main").appendChild(innerHtmlNode);
+  if (!opts.hideAdminLink) {
+    const footer = wrap.querySelector("footer");
+    footer.innerHTML = `<button id="admin-link" class="hover:text-slate-600 underline underline-offset-2">管理者ログイン</button>`;
+    footer.querySelector("#admin-link").onclick = () => { state.view = "adminLogin"; render(); };
+  }
+  return wrap;
+}
+
+/* ============================================================
+   画面ごとの描画
+============================================================ */
+const Views = {};
+
+Views.loading = () => el(`
+  <div class="min-h-screen flex items-center justify-center">
+    <div class="text-slate-400 text-sm">読み込み中...</div>
+  </div>
+`);
+
+Views.setupNeeded = () => el(`
+  <div class="min-h-screen flex items-center justify-center px-4">
+    <div class="max-w-md text-center bg-white border border-amber-200 rounded-xl p-6 shadow-sm">
+      <div class="text-amber-500 text-3xl mb-2">⚠️</div>
+      <h1 class="font-semibold text-slate-700 mb-2">初期設定が完了していません</h1>
+      <p class="text-sm text-slate-500">このHTMLファイル内の <code class="bg-slate-100 px-1 rounded">GAS_URL</code> に、Google Apps Script のウェブアプリURLを設定してください。詳しくは「セットアップ手順.md」をご覧ください。</p>
+    </div>
+  </div>
+`);
+
+Views.error = () => {
+  const node = el(`
+    <div class="min-h-screen flex items-center justify-center px-4">
+      <div class="max-w-md text-center bg-white border border-red-200 rounded-xl p-6 shadow-sm">
+        <div class="text-red-400 text-3xl mb-2">✕</div>
+        <p class="text-sm text-slate-600 mb-4">${escapeHtml(state.errorMessage || "エラーが発生しました")}</p>
+        <button id="retry" class="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm hover:bg-indigo-700">再読み込み</button>
+      </div>
+    </div>
+  `);
+  node.querySelector("#retry").onclick = loadQuiz;
+  return node;
+};
+
+Views.start = () => {
+  const inner = el(`
+    <div class="fade-in">
+      <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-8">
+        <h1 class="text-xl font-bold text-slate-800 mb-2">${escapeHtml(state.quiz.title)}</h1>
+        <p class="text-sm text-slate-500 whitespace-pre-wrap leading-relaxed mb-6">${escapeHtml(state.quiz.description)}</p>
+        <div class="text-xs text-slate-400 mb-6">全${state.quiz.questions.length}問 ・ 所要時間の目安 ${Math.max(3, Math.ceil(state.quiz.questions.length * 0.7))}分</div>
+
+        <div class="space-y-4">
+          <div>
+            <label class="block text-sm font-medium text-slate-600 mb-1">氏名 <span class="text-red-400">*</span></label>
+            <input id="name-input" type="text" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300" placeholder="例: 山田 太郎" value="${escapeHtml(state.respondent.name)}">
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-slate-600 mb-1">部署 <span class="text-red-400">*</span></label>
+            <input id="dept-input" type="text" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300" placeholder="例: 経理部" value="${escapeHtml(state.respondent.department)}">
+          </div>
+        </div>
+
+        <button id="start-btn" class="mt-6 w-full py-3 rounded-lg bg-indigo-600 text-white font-medium text-sm hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed" disabled>クイズを開始する</button>
+      </div>
+    </div>
+  `);
+
+  const nameInput = inner.querySelector("#name-input");
+  const deptInput = inner.querySelector("#dept-input");
+  const startBtn = inner.querySelector("#start-btn");
+
+  function checkValid() {
+    startBtn.disabled = !(nameInput.value.trim() && deptInput.value.trim());
+  }
+  nameInput.oninput = checkValid;
+  deptInput.oninput = checkValid;
+  checkValid();
+
+  startBtn.onclick = () => {
+    state.respondent.name = nameInput.value.trim();
+    state.respondent.department = deptInput.value.trim();
+    state.currentIndex = 0;
+    state.answers = [];
+    state.selectedIndex = null;
+    state.showFeedback = false;
+    state.view = "quiz";
+    render();
+  };
+
+  return pageShell(inner);
+};
+
+Views.quiz = () => {
+  const qIndex = state.order[state.currentIndex];
+  const q = state.quiz.questions[qIndex];
+  const total = state.order.length;
+  const progressPct = Math.round((state.currentIndex / total) * 100);
+
+  const inner = el(`
+    <div class="fade-in">
+      <div class="mb-4">
+        <div class="flex items-center justify-between text-xs text-slate-400 mb-1">
+          <span>質問 ${state.currentIndex + 1} / ${total}</span>
+          <span>${progressPct}%</span>
+        </div>
+        <div class="h-1.5 bg-slate-200 rounded-full overflow-hidden">
+          <div class="h-full bg-indigo-500 transition-all" style="width:${progressPct}%"></div>
+        </div>
+      </div>
+
+      <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-8">
+        <h2 class="text-base font-semibold text-slate-800 leading-relaxed mb-6">${escapeHtml(q.question)}</h2>
+        <div id="choices" class="space-y-3"></div>
+        <div id="feedback-box" class="mt-5"></div>
+        <button id="next-btn" class="mt-6 w-full py-3 rounded-lg bg-indigo-600 text-white font-medium text-sm hover:bg-indigo-700 hidden">
+          ${state.currentIndex === total - 1 ? "自由記述へ進む" : "次の質問へ"}
+        </button>
+      </div>
+    </div>
+  `);
+
+  const choicesBox = inner.querySelector("#choices");
+  const feedbackBox = inner.querySelector("#feedback-box");
+  const nextBtn = inner.querySelector("#next-btn");
+
+  q.choices.forEach((choiceText, i) => {
+    const btn = el(`
+      <button class="choice-btn w-full text-left px-4 py-3 rounded-lg border border-slate-300 text-sm hover:border-indigo-400 hover:bg-indigo-50">
+        <span class="inline-block w-5 h-5 rounded-full border border-slate-300 text-center text-xs leading-5 mr-2 align-middle">${"ABCD"[i]}</span>${escapeHtml(choiceText)}
+      </button>
+    `);
+    btn.onclick = () => selectChoice(i);
+    choicesBox.appendChild(btn);
+  });
+
+  function selectChoice(i) {
+    if (state.showFeedback) return;
+    const correct = i === q.correctIndex;
+    state.selectedIndex = i;
+    state.showFeedback = true;
+    state.answers.push({
+      questionId: q.id,
+      question: q.question,
+      selectedIndex: i,
+      selectedText: q.choices[i],
+      correct
+    });
+
+    [...choicesBox.children].forEach((btn, idx) => {
+      btn.disabled = true;
+      btn.classList.remove("hover:border-indigo-400", "hover:bg-indigo-50");
+      if (idx === q.correctIndex) {
+        btn.classList.add("border-emerald-400", "bg-emerald-50");
+      } else if (idx === i) {
+        btn.classList.add("border-red-400", "bg-red-50");
+      } else {
+        btn.classList.add("opacity-50");
+      }
+    });
+
+    feedbackBox.appendChild(el(`
+      <div class="fade-in rounded-lg px-4 py-3 text-sm ${correct ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"}">
+        <div class="font-semibold mb-1">${correct ? "正解です" : "不正解です"}</div>
+        ${q.explanation ? `<div class="text-slate-600">${escapeHtml(q.explanation)}</div>` : ""}
+      </div>
+    `));
+
+    nextBtn.classList.remove("hidden");
+  }
+
+  nextBtn.onclick = () => {
+    state.showFeedback = false;
+    state.selectedIndex = null;
+    if (state.currentIndex < total - 1) {
+      state.currentIndex += 1;
+    } else {
+      state.view = "freetext";
+    }
+    render();
+  };
+
+  return pageShell(inner);
+};
+
+Views.freetext = () => {
+  const inner = el(`
+    <div class="fade-in">
+      <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-8">
+        <h2 class="text-base font-semibold text-slate-800 mb-1">最後にご記入ください</h2>
+        <p class="text-xs text-slate-400 mb-6">送信をもって回答完了となります。</p>
+
+        <div class="space-y-5">
+          <div>
+            <label class="block text-sm font-medium text-slate-600 mb-1">学んだこと・業務に活かしたいこと</label>
+            <textarea id="ft1" rows="4" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300"></textarea>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-slate-600 mb-1">感想・知りたいこと・その他ご要望等</label>
+            <textarea id="ft2" rows="4" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300"></textarea>
+          </div>
+        </div>
+
+        <div id="submit-error" class="mt-4 text-sm text-red-600"></div>
+        <button id="submit-btn" class="mt-4 w-full py-3 rounded-lg bg-indigo-600 text-white font-medium text-sm hover:bg-indigo-700 disabled:opacity-50">送信する</button>
+      </div>
+    </div>
+  `);
+
+  const submitBtn = inner.querySelector("#submit-btn");
+  const errorBox = inner.querySelector("#submit-error");
+
+  submitBtn.onclick = async () => {
+    state.freeText1 = inner.querySelector("#ft1").value.trim();
+    state.freeText2 = inner.querySelector("#ft2").value.trim();
+
+    submitBtn.disabled = true;
+    submitBtn.textContent = "送信中...";
+    errorBox.textContent = "";
+
+    const score = state.answers.filter((a) => a.correct).length;
+    const total = state.answers.length;
+    const correctRate = total > 0 ? Math.round((score / total) * 1000) / 10 : 0;
+
+    try {
+      const res = await apiPost({
+        action: "submitResponse",
+        name: state.respondent.name,
+        department: state.respondent.department,
+        answers: state.answers,
+        score, total, correctRate,
+        freeText1: state.freeText1,
+        freeText2: state.freeText2
+      });
+      if (!res.ok) throw new Error(res.error || "送信に失敗しました");
+      state.resultScore = score;
+      state.resultTotal = total;
+      state.resultRate = correctRate;
+      state.view = "result";
+      render();
+    } catch (err) {
+      errorBox.textContent = "送信に失敗しました。通信環境をご確認のうえ、もう一度お試しください。(" + err.message + ")";
+      submitBtn.disabled = false;
+      submitBtn.textContent = "送信する";
+    }
+  };
+
+  return pageShell(inner);
+};
+
+Views.result = () => {
+  const rate = state.resultRate;
+  let message = "お疲れ様でした。";
+  if (rate === 100) message = "満点です。素晴らしい理解度です。";
+  else if (rate >= 80) message = "よく理解できています。";
+  else if (rate >= 50) message = "基本は押さえられています。復習をおすすめします。";
+  else message = "重要なポイントを見直しておきましょう。";
+
+  const inner = el(`
+    <div class="fade-in text-center">
+      <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-10">
+        <div class="text-4xl mb-4">✅</div>
+        <h2 class="text-lg font-bold text-slate-800 mb-1">回答ありがとうございました</h2>
+        <p class="text-sm text-slate-500 mb-6">${escapeHtml(state.respondent.name)} 様 (${escapeHtml(state.respondent.department)})</p>
+        <div class="flex items-center justify-center gap-8 mb-4">
+          <div>
+            <div class="text-3xl font-bold text-indigo-600">${state.resultScore} / ${state.resultTotal}</div>
+            <div class="text-xs text-slate-400 mt-1">正答数</div>
+          </div>
+          <div>
+            <div class="text-3xl font-bold text-indigo-600">${rate}%</div>
+            <div class="text-xs text-slate-400 mt-1">正答率</div>
+          </div>
+        </div>
+        <p class="text-sm text-slate-600">${message}</p>
+      </div>
+    </div>
+  `);
+  return pageShell(inner, { hideAdminLink: true });
+};
+
+/* ============================================================
+   管理者ログイン
+============================================================ */
+Views.adminLogin = () => {
+  const inner = el(`
+    <div class="fade-in max-w-sm mx-auto mt-10">
+      <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-8">
+        <h2 class="text-base font-semibold text-slate-800 mb-4">管理者ログイン</h2>
+        <input id="pw" type="password" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm mb-2" placeholder="管理者パスワード">
+        <div id="login-error" class="text-sm text-red-600 mb-2"></div>
+        <button id="login-btn" class="w-full py-2.5 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700">ログイン</button>
+        <button id="back-btn" class="w-full py-2 mt-2 text-xs text-slate-400 hover:text-slate-600">回答画面に戻る</button>
+      </div>
+    </div>
+  `);
+
+  const pwInput = inner.querySelector("#pw");
+  const errBox = inner.querySelector("#login-error");
+  const loginBtn = inner.querySelector("#login-btn");
+
+  async function doLogin() {
+    const pw = pwInput.value;
+    if (!pw) return;
+    loginBtn.disabled = true;
+    loginBtn.textContent = "確認中...";
+    errBox.textContent = "";
+    try {
+      const data = await apiGet({ action: "admin", password: pw });
+      if (!data.ok) {
+        errBox.textContent = data.error || "パスワードが違います";
+        loginBtn.disabled = false;
+        loginBtn.textContent = "ログイン";
+        return;
+      }
+      state.admin.password = pw;
+      state.admin.data = data;
+      state.admin.editQuestions = JSON.parse(JSON.stringify(data.questions));
+      state.admin.settingsDraft = { title: data.title, description: data.description, shuffleQuestions: data.shuffleQuestions, newPassword: "" };
+      state.view = "adminDashboard";
+      render();
+    } catch (err) {
+      errBox.textContent = "通信エラーが発生しました: " + err.message;
+      loginBtn.disabled = false;
+      loginBtn.textContent = "ログイン";
+    }
+  }
+
+  loginBtn.onclick = doLogin;
+  pwInput.onkeydown = (e) => { if (e.key === "Enter") doLogin(); };
+  inner.querySelector("#back-btn").onclick = () => { state.view = "start"; render(); };
+
+  return pageShell(inner, { hideAdminLink: true });
+};
+
+/* ============================================================
+   管理者ダッシュボード
+============================================================ */
+Views.adminDashboard = () => {
+  const a = state.admin;
+  const inner = el(`
+    <div class="fade-in">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="text-lg font-bold text-slate-800">管理者ダッシュボード</h2>
+        <div class="flex gap-2">
+          <a href="${a.data.spreadsheetUrl}" target="_blank" class="text-xs px-3 py-1.5 rounded-lg border border-slate-300 hover:bg-slate-100">スプレッドシートを開く</a>
+          <button id="logout-btn" class="text-xs px-3 py-1.5 rounded-lg border border-slate-300 hover:bg-slate-100">ログアウト</button>
+        </div>
+      </div>
+      <div class="flex gap-1 mb-4 border-b border-slate-200">
+        <button data-tab="responses" class="tab-btn px-4 py-2 text-sm border-b-2 ${a.tab === "responses" ? "border-indigo-600 text-indigo-600 font-medium" : "border-transparent text-slate-500"}">回答一覧</button>
+        <button data-tab="questions" class="tab-btn px-4 py-2 text-sm border-b-2 ${a.tab === "questions" ? "border-indigo-600 text-indigo-600 font-medium" : "border-transparent text-slate-500"}">設問管理</button>
+        <button data-tab="settings" class="tab-btn px-4 py-2 text-sm border-b-2 ${a.tab === "settings" ? "border-indigo-600 text-indigo-600 font-medium" : "border-transparent text-slate-500"}">設定</button>
+      </div>
+      <div id="tab-content"></div>
+    </div>
+  `);
+
+  inner.querySelector("#logout-btn").onclick = () => {
+    state.admin.password = "";
+    state.admin.data = null;
+    state.view = "start";
+    render();
+  };
+
+  inner.querySelectorAll(".tab-btn").forEach((btn) => {
+    btn.onclick = () => { state.admin.tab = btn.dataset.tab; render(); };
+  });
+
+  const content = inner.querySelector("#tab-content");
+  if (a.tab === "responses") content.appendChild(renderResponsesTab());
+  else if (a.tab === "questions") content.appendChild(renderQuestionsTab());
+  else content.appendChild(renderSettingsTab());
+
+  const wrap = el(`<div class="max-w-5xl w-full mx-auto px-4 py-8"></div>`);
+  wrap.appendChild(inner);
+
+  const outer = el(`
+    <div class="min-h-screen flex flex-col">
+      <header class="border-b border-slate-200 bg-white">
+        <div class="max-w-5xl mx-auto px-4 py-4 flex items-center gap-2">
+          <div class="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center text-white font-bold text-sm">C</div>
+          <span class="font-semibold text-slate-700">${escapeHtml(a.data.title)}(管理画面)</span>
+        </div>
+      </header>
+      <main class="flex-1"></main>
+    </div>
+  `);
+  outer.querySelector("main").appendChild(wrap);
+  return outer;
+};
+
+function renderResponsesTab() {
+  const a = state.admin;
+  const responses = a.data.responses.slice().sort((x, y) => new Date(y.timestamp) - new Date(x.timestamp));
+  const count = responses.length;
+  const avgRate = count > 0 ? Math.round((responses.reduce((s, r) => s + Number(r.correctRate || 0), 0) / count) * 10) / 10 : 0;
+
+  const box = el(`
+    <div>
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
+        <div class="bg-white rounded-xl border border-slate-200 p-4">
+          <div class="text-2xl font-bold text-slate-800">${count}</div>
+          <div class="text-xs text-slate-400 mt-1">回答者数</div>
+        </div>
+        <div class="bg-white rounded-xl border border-slate-200 p-4">
+          <div class="text-2xl font-bold text-slate-800">${avgRate}%</div>
+          <div class="text-xs text-slate-400 mt-1">平均正答率</div>
+        </div>
+        <div class="bg-white rounded-xl border border-slate-200 p-4 flex items-center">
+          <button id="csv-btn" class="w-full py-2 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700">CSVをダウンロード</button>
+        </div>
+      </div>
+      <div class="bg-white rounded-xl border border-slate-200 overflow-hidden">
+        <table class="w-full text-sm">
+          <thead class="bg-slate-50 text-slate-500 text-xs">
+            <tr>
+              <th class="text-left px-4 py-2 font-medium">氏名</th>
+              <th class="text-left px-4 py-2 font-medium">部署</th>
+              <th class="text-left px-4 py-2 font-medium">回答日時</th>
+              <th class="text-left px-4 py-2 font-medium">正答数</th>
+              <th class="text-left px-4 py-2 font-medium">正答率</th>
+              <th class="text-left px-4 py-2 font-medium"></th>
+            </tr>
+          </thead>
+          <tbody id="resp-tbody"></tbody>
+        </table>
+        ${count === 0 ? '<div class="text-center text-sm text-slate-400 py-8">まだ回答はありません</div>' : ""}
+      </div>
+    </div>
+  `);
+
+  const tbody = box.querySelector("#resp-tbody");
+  responses.forEach((r, i) => {
+    const dt = new Date(r.timestamp);
+    const dtStr = dt.toLocaleString("ja-JP");
+    const row = el(`
+      <tr class="border-t border-slate-100">
+        <td class="px-4 py-2">${escapeHtml(r.name)}</td>
+        <td class="px-4 py-2">${escapeHtml(r.department)}</td>
+        <td class="px-4 py-2 text-slate-500">${dtStr}</td>
+        <td class="px-4 py-2">${r.score} / ${r.total}</td>
+        <td class="px-4 py-2">${r.correctRate}%</td>
+        <td class="px-4 py-2 text-right"><button class="expand-btn text-indigo-600 text-xs hover:underline">詳細</button></td>
+      </tr>
+    `);
+    const detailRow = el(`
+      <tr class="hidden border-t border-slate-100 bg-slate-50">
+        <td colspan="6" class="px-4 py-3"></td>
+      </tr>
+    `);
+    const detailCell = detailRow.querySelector("td");
+    r.answers.forEach((ans, qi) => {
+      detailCell.appendChild(el(`
+        <div class="mb-2 text-xs">
+          <div class="text-slate-600">Q${qi + 1}. ${escapeHtml(ans.question)}</div>
+          <div class="${ans.correct ? "text-emerald-600" : "text-red-600"}">${ans.correct ? "◯" : "×"} 回答: ${escapeHtml(ans.selectedText)}</div>
+        </div>
+      `));
+    });
+    if (r.freeText1) detailCell.appendChild(el(`<div class="mt-2 text-xs"><span class="font-medium text-slate-600">学んだこと・活かしたいこと: </span>${escapeHtml(r.freeText1)}</div>`));
+    if (r.freeText2) detailCell.appendChild(el(`<div class="mt-1 text-xs"><span class="font-medium text-slate-600">感想・要望: </span>${escapeHtml(r.freeText2)}</div>`));
+
+    row.querySelector(".expand-btn").onclick = () => {
+      detailRow.classList.toggle("hidden");
+    };
+    tbody.appendChild(row);
+    tbody.appendChild(detailRow);
+  });
+
+  box.querySelector("#csv-btn").onclick = () => downloadCsv(responses, a.data.questions);
+  return box;
+}
+
+function csvEscape(v) {
+  const s = String(v ?? "");
+  if (/[",\n]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
+  return s;
+}
+
+function downloadCsv(responses, questions) {
+  const sortedQ = questions.slice().sort((x, y) => x.order - y.order);
+  const headers = ["氏名", "部署", "回答日時", "正答数", "出題数", "正答率(%)"];
+  sortedQ.forEach((q, i) => headers.push(`問${i + 1}`));
+  headers.push("学んだこと・活かしたいこと", "感想・要望");
+
+  const lines = [headers.map(csvEscape).join(",")];
+  responses.forEach((r) => {
+    const row = [r.name, r.department, new Date(r.timestamp).toLocaleString("ja-JP"), r.score, r.total, r.correctRate];
+    sortedQ.forEach((q) => {
+      const ans = r.answers.find((x) => x.questionId === q.id);
+      row.push(ans ? `${ans.correct ? "◯" : "×"} ${ans.selectedText}` : "");
+    });
+    row.push(r.freeText1 || "", r.freeText2 || "");
+    lines.push(row.map(csvEscape).join(","));
+  });
+
+  const csv = "﻿" + lines.join("\r\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "compliance_quiz_responses_" + new Date().toISOString().slice(0, 10) + ".csv";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function renderQuestionsTab() {
+  const a = state.admin;
+  const box = el(`
+    <div>
+      <div class="flex items-center justify-between mb-3">
+        <p class="text-xs text-slate-400">「有効」がオンの設問だけが回答画面に出題されます。</p>
+        <div class="flex gap-2">
+          <button id="add-q" class="text-xs px-3 py-1.5 rounded-lg border border-slate-300 hover:bg-slate-100">+ 設問を追加</button>
+          <button id="save-q" class="text-xs px-3 py-1.5 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700">保存する</button>
+        </div>
+      </div>
+      <div id="save-msg" class="text-sm text-emerald-600 mb-2"></div>
+      <div id="q-list" class="space-y-4"></div>
+    </div>
+  `);
+
+  const list = box.querySelector("#q-list");
+
+  function renumber() {
+    a.editQuestions.forEach((q, i) => { q.order = i + 1; });
+  }
+
+  function renderList() {
+    list.innerHTML = "";
+    a.editQuestions.forEach((q, i) => {
+      const card = el(`
+        <div class="bg-white rounded-xl border border-slate-200 p-5">
+          <div class="flex items-center justify-between mb-3">
+            <div class="flex items-center gap-2 text-xs text-slate-400">
+              <span>問${i + 1}</span>
+              <button data-act="up" class="px-1.5 py-0.5 border border-slate-200 rounded hover:bg-slate-100">↑</button>
+              <button data-act="down" class="px-1.5 py-0.5 border border-slate-200 rounded hover:bg-slate-100">↓</button>
+            </div>
+            <label class="flex items-center gap-1.5 text-xs text-slate-500">
+              <input type="checkbox" data-field="active" ${q.active ? "checked" : ""}> 有効
+            </label>
+          </div>
+          <textarea data-field="question" rows="2" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm mb-3" placeholder="設問文">${escapeHtml(q.question)}</textarea>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-3">
+            ${[0, 1, 2, 3].map((ci) => `
+              <div class="flex items-center gap-2">
+                <input type="radio" name="correct-${i}" data-choice-idx="${ci}" data-field="correct" ${q.correctIndex === ci ? "checked" : ""}>
+                <input type="text" data-field="choice${ci}" value="${escapeHtml(q.choices[ci] || "")}" class="flex-1 border border-slate-300 rounded-lg px-2 py-1.5 text-sm" placeholder="選択肢${"ABCD"[ci]}">
+              </div>
+            `).join("")}
+          </div>
+          <textarea data-field="explanation" rows="2" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm mb-2" placeholder="解説(回答後に表示されます)">${escapeHtml(q.explanation || "")}</textarea>
+          <button data-act="delete" class="text-xs text-red-500 hover:underline">この設問を削除</button>
+        </div>
+      `);
+
+      card.querySelector('[data-field="question"]').oninput = (e) => { q.question = e.target.value; };
+      card.querySelector('[data-field="explanation"]').oninput = (e) => { q.explanation = e.target.value; };
+      card.querySelector('[data-field="active"]').onchange = (e) => { q.active = e.target.checked; };
+      [0, 1, 2, 3].forEach((ci) => {
+        card.querySelector(`[data-field="choice${ci}"]`).oninput = (e) => { q.choices[ci] = e.target.value; };
+      });
+      card.querySelectorAll('[data-field="correct"]').forEach((radio) => {
+        radio.onchange = () => { q.correctIndex = Number(radio.dataset.choiceIdx); };
+      });
+      card.querySelector('[data-act="delete"]').onclick = () => {
+        if (!confirm("この設問を削除しますか？")) return;
+        a.editQuestions.splice(i, 1);
+        renumber();
+        renderList();
+      };
+      card.querySelector('[data-act="up"]').onclick = () => {
+        if (i === 0) return;
+        [a.editQuestions[i - 1], a.editQuestions[i]] = [a.editQuestions[i], a.editQuestions[i - 1]];
+        renumber();
+        renderList();
+      };
+      card.querySelector('[data-act="down"]').onclick = () => {
+        if (i === a.editQuestions.length - 1) return;
+        [a.editQuestions[i + 1], a.editQuestions[i]] = [a.editQuestions[i], a.editQuestions[i + 1]];
+        renumber();
+        renderList();
+      };
+
+      list.appendChild(card);
+    });
+  }
+  renderList();
+
+  box.querySelector("#add-q").onclick = () => {
+    a.editQuestions.push({
+      id: "q" + Date.now(),
+      order: a.editQuestions.length + 1,
+      active: true,
+      question: "",
+      choices: ["", "", "", ""],
+      correctIndex: 0,
+      explanation: ""
+    });
+    renderList();
+  };
+
+  box.querySelector("#save-q").onclick = async () => {
+    const btn = box.querySelector("#save-q");
+    const msg = box.querySelector("#save-msg");
+    btn.disabled = true;
+    btn.textContent = "保存中...";
+    msg.textContent = "";
+    try {
+      const res = await apiPost({ action: "saveQuestions", password: a.password, questions: a.editQuestions });
+      if (!res.ok) throw new Error(res.error || "保存に失敗しました");
+      msg.textContent = "保存しました。";
+      const refreshed = await apiGet({ action: "admin", password: a.password });
+      if (refreshed.ok) {
+        a.data = refreshed;
+        a.editQuestions = JSON.parse(JSON.stringify(refreshed.questions));
+      }
+    } catch (err) {
+      msg.classList.remove("text-emerald-600");
+      msg.classList.add("text-red-600");
+      msg.textContent = "保存に失敗しました: " + err.message;
+    }
+    btn.disabled = false;
+    btn.textContent = "保存する";
+  };
+
+  return box;
+}
+
+function renderSettingsTab() {
+  const a = state.admin;
+  const d = a.settingsDraft;
+  const box = el(`
+    <div class="bg-white rounded-xl border border-slate-200 p-6 max-w-lg">
+      <div class="space-y-4">
+        <div>
+          <label class="block text-sm font-medium text-slate-600 mb-1">クイズのタイトル</label>
+          <input id="s-title" type="text" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm" value="${escapeHtml(d.title)}">
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-slate-600 mb-1">説明文(開始画面に表示)</label>
+          <textarea id="s-desc" rows="3" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm">${escapeHtml(d.description)}</textarea>
+        </div>
+        <label class="flex items-center gap-2 text-sm text-slate-600">
+          <input id="s-shuffle" type="checkbox" ${d.shuffleQuestions ? "checked" : ""}> 出題順をランダムにする
+        </label>
+        <div>
+          <label class="block text-sm font-medium text-slate-600 mb-1">管理者パスワードを変更(空欄で変更なし)</label>
+          <input id="s-newpw" type="password" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm" placeholder="新しいパスワード">
+        </div>
+      </div>
+      <div id="s-msg" class="text-sm text-emerald-600 mt-3"></div>
+      <button id="s-save" class="mt-3 w-full py-2.5 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700">設定を保存</button>
+    </div>
+  `);
+
+  box.querySelector("#s-save").onclick = async () => {
+    const btn = box.querySelector("#s-save");
+    const msg = box.querySelector("#s-msg");
+    const newPw = box.querySelector("#s-newpw").value;
+    btn.disabled = true;
+    btn.textContent = "保存中...";
+    try {
+      const res = await apiPost({
+        action: "saveSettings",
+        password: a.password,
+        title: box.querySelector("#s-title").value,
+        description: box.querySelector("#s-desc").value,
+        shuffleQuestions: box.querySelector("#s-shuffle").checked,
+        newPassword: newPw || undefined
+      });
+      if (!res.ok) throw new Error(res.error || "保存に失敗しました");
+      if (newPw) a.password = newPw;
+      msg.classList.remove("text-red-600");
+      msg.classList.add("text-emerald-600");
+      msg.textContent = "保存しました。";
+      const refreshed = await apiGet({ action: "admin", password: a.password });
+      if (refreshed.ok) {
+        a.data = refreshed;
+        a.settingsDraft = { title: refreshed.title, description: refreshed.description, shuffleQuestions: refreshed.shuffleQuestions, newPassword: "" };
+      }
+    } catch (err) {
+      msg.classList.remove("text-emerald-600");
+      msg.classList.add("text-red-600");
+      msg.textContent = "保存に失敗しました: " + err.message;
+    }
+    btn.disabled = false;
+    btn.textContent = "設定を保存";
+  };
+
+  return box;
+}
+
+/* ============================================================
+   起動
+============================================================ */
+loadQuiz();
+</script>
+</body>
+</html>
