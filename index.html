@@ -21,7 +21,8 @@
 
 <script>
 /* ============================================================
-   設定: https://script.google.com/a/macros/sevenrich.jp/s/AKfycbyODfyFHIQBVrR8TnVHMqgTVxO4Y2c6ox-_Sql2DL7G2cOu7zY_duZ4GBoBeEV6SVh9Tw/exec   (デプロイ手順は「セットアップ手順.md」を参照)
+   設定: https://script.google.com/a/macros/sevenrich.jp/s/AKfycbyODfyFHIQBVrR8TnVHMqgTVxO4Y2c6ox-_Sql2DL7G2cOu7zY_duZ4GBoBeEV6SVh9Tw/exec
+   (デプロイ手順は「セットアップ手順.md」を参照)
 ============================================================ */
 const GAS_URL = "https://script.google.com/a/macros/sevenrich.jp/s/AKfycbyODfyFHIQBVrR8TnVHMqgTVxO4Y2c6ox-_Sql2DL7G2cOu7zY_duZ4GBoBeEV6SVh9Tw/exec";
 
@@ -77,23 +78,114 @@ function escapeHtml(s) {
 
 /* ============================================================
    API 呼び出し
+   ------------------------------------------------------------
+   社内(Google Workspace)アカウントでデプロイした Apps Script は、
+   別ドメイン(GitHub Pagesなど)からの fetch/XHR がブラウザのCORS制限で
+   ブロックされることがあるため、通常の fetch は使わず、
+   GET は <script> タグ経由のJSONP、POST は隠しフォーム送信で行う。
+   どちらもブラウザのCORSチェックの対象外の仕組みのため影響を受けない。
 ============================================================ */
 function isGasConfigured() {
   return typeof GAS_URL === "string" && GAS_URL.indexOf("https://script.google.com") === 0;
 }
 
-async function apiGet(params) {
-  const url = GAS_URL + "?" + new URLSearchParams(params).toString();
-  const res = await fetch(url, { method: "GET" });
-  if (!res.ok) throw new Error("HTTPエラー: " + res.status);
-  return res.json();
+let __jsonpSeq = 0;
+function apiGet(params) {
+  return new Promise((resolve, reject) => {
+    const cbName = "__quizCb" + (__jsonpSeq++) + "_" + Date.now();
+    const script = document.createElement("script");
+    let done = false;
+
+    const timer = setTimeout(() => {
+      if (done) return;
+      done = true;
+      cleanup();
+      reject(new Error("タイムアウトしました(通信環境をご確認ください)"));
+    }, 20000);
+
+    function cleanup() {
+      clearTimeout(timer);
+      delete window[cbName];
+      if (script.parentNode) script.parentNode.removeChild(script);
+    }
+
+    window[cbName] = (data) => {
+      if (done) return;
+      done = true;
+      cleanup();
+      resolve(data);
+    };
+
+    script.onerror = () => {
+      if (done) return;
+      done = true;
+      cleanup();
+      reject(new Error("通信に失敗しました"));
+    };
+
+    const qs = new URLSearchParams({ ...params, callback: cbName }).toString();
+    script.src = GAS_URL + "?" + qs;
+    document.body.appendChild(script);
+  });
 }
 
-// Apps Script への POST はプリフライトを避けるため Content-Type を指定しない
-async function apiPost(body) {
-  const res = await fetch(GAS_URL, { method: "POST", body: JSON.stringify(body) });
-  if (!res.ok) throw new Error("HTTPエラー: " + res.status);
-  return res.json();
+// 隠しiframe + フォーム送信でPOSTする。CORSの対象外になる一方、
+// レスポンス本文は読み取れないため、成否の確認が必要な呼び出し元は
+// 送信後に apiGet で状態を取得し直して確認すること。
+let __formSeq = 0;
+function apiPost(params) {
+  return new Promise((resolve, reject) => {
+    const frameName = "__quizFrame" + (__formSeq++) + "_" + Date.now();
+    const iframe = document.createElement("iframe");
+    iframe.name = frameName;
+    iframe.style.display = "none";
+
+    const form = document.createElement("form");
+    form.method = "POST";
+    form.action = GAS_URL;
+    form.target = frameName;
+    form.style.display = "none";
+
+    Object.entries(params).forEach(([key, value]) => {
+      if (value === undefined || value === null) return;
+      const input = document.createElement("input");
+      input.type = "hidden";
+      input.name = key;
+      input.value = (typeof value === "object") ? JSON.stringify(value) : String(value);
+      form.appendChild(input);
+    });
+
+    let done = false;
+    const timer = setTimeout(() => {
+      if (done) return;
+      done = true;
+      cleanup();
+      reject(new Error("タイムアウトしました(通信環境をご確認ください)"));
+    }, 20000);
+
+    function cleanup() {
+      clearTimeout(timer);
+      if (form.parentNode) form.parentNode.removeChild(form);
+      setTimeout(() => { if (iframe.parentNode) iframe.parentNode.removeChild(iframe); }, 300);
+    }
+
+    document.body.appendChild(iframe);
+    document.body.appendChild(form);
+
+    // appendChild直後はiframeの空ページ読み込み(about:blank)によって
+    // loadイベントが同期的に発火することがあるため、1tick遅らせてから
+    // 本来の送信後のloadだけを拾うようにする。
+    setTimeout(() => {
+      iframe.addEventListener("load", function onLoad() {
+        iframe.removeEventListener("load", onLoad);
+        if (done) return;
+        done = true;
+        cleanup();
+        resolve({ ok: true });
+      });
+      form.submit();
+    }, 0);
+  });
 }
 
 /* ============================================================
