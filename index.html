@@ -21,10 +21,10 @@
 
 <script>
 /* ============================================================
-   設定: https://script.google.com/a/macros/sevenrich.jp/s/AKfycbyODfyFHIQBVrR8TnVHMqgTVxO4Y2c6ox-_Sql2DL7G2cOu7zY_duZ4GBoBeEV6SVh9Tw/exec
+   設定: ここに Google Apps Script のウェブアプリURLを貼り付けてください
    (デプロイ手順は「セットアップ手順.md」を参照)
 ============================================================ */
-const GAS_URL = "https://script.google.com/a/macros/sevenrich.jp/s/AKfycbyODfyFHIQBVrR8TnVHMqgTVxO4Y2c6ox-_Sql2DL7G2cOu7zY_duZ4GBoBeEV6SVh9Tw/exec";
+const GAS_URL = "ここにGoogleAppsScriptのウェブアプリURLを貼り付け";
 
 /* ============================================================
    状態管理
@@ -33,7 +33,7 @@ const state = {
   view: "loading",          // loading | setupNeeded | error | start | quiz | freetext | result | adminLogin | adminDashboard
   errorMessage: "",
   quiz: null,                // { title, description, questions, shuffleQuestions }
-  respondent: { name: "", department: "" },
+  respondent: { name: "", department: "", email: "" },
   order: [],                 // 出題順(質問インデックスの配列)
   currentIndex: 0,
   answers: [],                // { questionId, question, choices, selectedIndex, selectedText, correct }
@@ -213,6 +213,23 @@ async function loadQuiz() {
   render();
 }
 
+function getAllowedDomains() {
+  return String(state.quiz?.allowedEmailDomains || "")
+    .split(",")
+    .map((d) => d.trim().toLowerCase().replace(/^@/, ""))
+    .filter((d) => d.length > 0);
+}
+
+function isAllowedEmail(email) {
+  const domains = getAllowedDomains();
+  if (domains.length === 0) return true; // 制限が設定されていない場合
+  const em = String(email || "").trim().toLowerCase();
+  const at = em.lastIndexOf("@");
+  if (at === -1) return false;
+  const domain = em.substring(at + 1);
+  return domains.includes(domain);
+}
+
 function shuffleArray(arr) {
   for (let i = arr.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
@@ -300,6 +317,11 @@ Views.start = () => {
             <label class="block text-sm font-medium text-slate-600 mb-1">部署 <span class="text-red-400">*</span></label>
             <input id="dept-input" type="text" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300" placeholder="例: 経理部" value="${escapeHtml(state.respondent.department)}">
           </div>
+          <div>
+            <label class="block text-sm font-medium text-slate-600 mb-1">会社のメールアドレス <span class="text-red-400">*</span></label>
+            <input id="email-input" type="email" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300" placeholder="例: yamada@example.co.jp" value="${escapeHtml(state.respondent.email)}">
+            <div id="email-error" class="text-xs text-red-500 mt-1 hidden">社内のメールアドレスでご入力ください。</div>
+          </div>
         </div>
 
         <button id="start-btn" class="mt-6 w-full py-3 rounded-lg bg-indigo-600 text-white font-medium text-sm hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed" disabled>クイズを開始する</button>
@@ -309,18 +331,24 @@ Views.start = () => {
 
   const nameInput = inner.querySelector("#name-input");
   const deptInput = inner.querySelector("#dept-input");
+  const emailInput = inner.querySelector("#email-input");
+  const emailError = inner.querySelector("#email-error");
   const startBtn = inner.querySelector("#start-btn");
 
   function checkValid() {
-    startBtn.disabled = !(nameInput.value.trim() && deptInput.value.trim());
+    const emailOk = isAllowedEmail(emailInput.value.trim());
+    emailError.classList.toggle("hidden", emailOk || emailInput.value.trim() === "");
+    startBtn.disabled = !(nameInput.value.trim() && deptInput.value.trim() && emailInput.value.trim() && emailOk);
   }
   nameInput.oninput = checkValid;
   deptInput.oninput = checkValid;
+  emailInput.oninput = checkValid;
   checkValid();
 
   startBtn.onclick = () => {
     state.respondent.name = nameInput.value.trim();
     state.respondent.department = deptInput.value.trim();
+    state.respondent.email = emailInput.value.trim();
     state.currentIndex = 0;
     state.answers = [];
     state.selectedIndex = null;
@@ -468,6 +496,7 @@ Views.freetext = () => {
         action: "submitResponse",
         name: state.respondent.name,
         department: state.respondent.department,
+        email: state.respondent.email,
         answers: state.answers,
         score, total, correctRate,
         freeText1: state.freeText1,
@@ -557,7 +586,7 @@ Views.adminLogin = () => {
       state.admin.password = pw;
       state.admin.data = data;
       state.admin.editQuestions = JSON.parse(JSON.stringify(data.questions));
-      state.admin.settingsDraft = { title: data.title, description: data.description, shuffleQuestions: data.shuffleQuestions, newPassword: "" };
+      state.admin.settingsDraft = { title: data.title, description: data.description, shuffleQuestions: data.shuffleQuestions, allowedEmailDomains: data.allowedEmailDomains || "", newPassword: "" };
       state.view = "adminDashboard";
       render();
     } catch (err) {
@@ -658,6 +687,7 @@ function renderResponsesTab() {
             <tr>
               <th class="text-left px-4 py-2 font-medium">氏名</th>
               <th class="text-left px-4 py-2 font-medium">部署</th>
+              <th class="text-left px-4 py-2 font-medium">メールアドレス</th>
               <th class="text-left px-4 py-2 font-medium">回答日時</th>
               <th class="text-left px-4 py-2 font-medium">正答数</th>
               <th class="text-left px-4 py-2 font-medium">正答率</th>
@@ -679,6 +709,7 @@ function renderResponsesTab() {
       <tr class="border-t border-slate-100">
         <td class="px-4 py-2">${escapeHtml(r.name)}</td>
         <td class="px-4 py-2">${escapeHtml(r.department)}</td>
+        <td class="px-4 py-2 text-slate-500">${escapeHtml(r.email)}</td>
         <td class="px-4 py-2 text-slate-500">${dtStr}</td>
         <td class="px-4 py-2">${r.score} / ${r.total}</td>
         <td class="px-4 py-2">${r.correctRate}%</td>
@@ -687,7 +718,7 @@ function renderResponsesTab() {
     `);
     const detailRow = el(`
       <tr class="hidden border-t border-slate-100 bg-slate-50">
-        <td colspan="6" class="px-4 py-3"></td>
+        <td colspan="7" class="px-4 py-3"></td>
       </tr>
     `);
     const detailCell = detailRow.querySelector("td");
@@ -721,13 +752,13 @@ function csvEscape(v) {
 
 function downloadCsv(responses, questions) {
   const sortedQ = questions.slice().sort((x, y) => x.order - y.order);
-  const headers = ["氏名", "部署", "回答日時", "正答数", "出題数", "正答率(%)"];
+  const headers = ["氏名", "部署", "メールアドレス", "回答日時", "正答数", "出題数", "正答率(%)"];
   sortedQ.forEach((q, i) => headers.push(`問${i + 1}`));
   headers.push("学んだこと・活かしたいこと", "感想・要望");
 
   const lines = [headers.map(csvEscape).join(",")];
   responses.forEach((r) => {
-    const row = [r.name, r.department, new Date(r.timestamp).toLocaleString("ja-JP"), r.score, r.total, r.correctRate];
+    const row = [r.name, r.department, r.email, new Date(r.timestamp).toLocaleString("ja-JP"), r.score, r.total, r.correctRate];
     sortedQ.forEach((q) => {
       const ans = r.answers.find((x) => x.questionId === q.id);
       row.push(ans ? `${ans.correct ? "◯" : "×"} ${ans.selectedText}` : "");
@@ -890,6 +921,11 @@ function renderSettingsTab() {
           <input id="s-shuffle" type="checkbox" ${d.shuffleQuestions ? "checked" : ""}> 出題順をランダムにする
         </label>
         <div>
+          <label class="block text-sm font-medium text-slate-600 mb-1">回答を許可するメールドメイン(カンマ区切り、空欄で制限なし)</label>
+          <input id="s-domains" type="text" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm" placeholder="例: sevenrich.jp, group-company.co.jp" value="${escapeHtml(d.allowedEmailDomains || "")}">
+          <p class="text-xs text-slate-400 mt-1">ここに設定したドメイン以外のメールアドレスでは、クイズに回答できなくなります。</p>
+        </div>
+        <div>
           <label class="block text-sm font-medium text-slate-600 mb-1">管理者パスワードを変更(空欄で変更なし)</label>
           <input id="s-newpw" type="password" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm" placeholder="新しいパスワード">
         </div>
@@ -912,6 +948,7 @@ function renderSettingsTab() {
         title: box.querySelector("#s-title").value,
         description: box.querySelector("#s-desc").value,
         shuffleQuestions: box.querySelector("#s-shuffle").checked,
+        allowedEmailDomains: box.querySelector("#s-domains").value,
         newPassword: newPw || undefined
       });
       if (!res.ok) throw new Error(res.error || "保存に失敗しました");
@@ -922,7 +959,7 @@ function renderSettingsTab() {
       const refreshed = await apiGet({ action: "admin", password: a.password });
       if (refreshed.ok) {
         a.data = refreshed;
-        a.settingsDraft = { title: refreshed.title, description: refreshed.description, shuffleQuestions: refreshed.shuffleQuestions, newPassword: "" };
+        a.settingsDraft = { title: refreshed.title, description: refreshed.description, shuffleQuestions: refreshed.shuffleQuestions, allowedEmailDomains: refreshed.allowedEmailDomains || "", newPassword: "" };
       }
     } catch (err) {
       msg.classList.remove("text-emerald-600");
