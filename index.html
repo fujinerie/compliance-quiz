@@ -21,10 +21,9 @@
 
 <script>
 /* ============================================================
-   設定: https://script.google.com/a/macros/sevenrich.jp/s/AKfycbwr1tZnwKifsFAvYpYKm5uNa_yFji6wd_F5EZBwemjPeaScXXFkE9i6XIPlwzNjSR7Hqg/exec
-   (デプロイ手順は「セットアップ手順.md」を参照)
+   設定: https://script.google.com/a/macros/sevenrich.jp/s/AKfycbxTGIe94DFHWvY_-XntdlidGDQh8bvEdzUrRCfoP5vzsHG3TfRFmUaNP68EQVJ2S9EogQ/exec   (デプロイ手順は「セットアップ手順.md」を参照)
 ============================================================ */
-const GAS_URL = "https://script.google.com/a/macros/sevenrich.jp/s/AKfycbyODfyFHIQBVrR8TnVHMqgTVxO4Y2c6ox-_Sql2DL7G2cOu7zY_duZ4GBoBeEV6SVh9Tw/exec";
+const GAS_URL = "https://script.google.com/a/macros/sevenrich.jp/s/AKfycbxTGIe94DFHWvY_-XntdlidGDQh8bvEdzUrRCfoP5vzsHG3TfRFmUaNP68EQVJ2S9EogQ/exec";
 
 /* ============================================================
    状態管理
@@ -314,8 +313,9 @@ Views.start = () => {
             <input id="name-input" type="text" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300" placeholder="例: 山田 太郎" value="${escapeHtml(state.respondent.name)}">
           </div>
           <div>
-            <label class="block text-sm font-medium text-slate-600 mb-1">部署 <span class="text-red-400">*</span></label>
-            <input id="dept-input" type="text" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300" placeholder="例: 経理部" value="${escapeHtml(state.respondent.department)}">
+            <label class="block text-sm font-medium text-slate-600 mb-1">部署(事業部) <span class="text-red-400">*</span></label>
+            <div id="dept-tabs" class="flex flex-wrap gap-2"></div>
+            <input id="dept-input" type="hidden" value="${escapeHtml(state.respondent.department)}">
           </div>
           <div>
             <label class="block text-sm font-medium text-slate-600 mb-1">会社のメールアドレス <span class="text-red-400">*</span></label>
@@ -331,9 +331,31 @@ Views.start = () => {
 
   const nameInput = inner.querySelector("#name-input");
   const deptInput = inner.querySelector("#dept-input");
+  const deptTabs = inner.querySelector("#dept-tabs");
   const emailInput = inner.querySelector("#email-input");
   const emailError = inner.querySelector("#email-error");
   const startBtn = inner.querySelector("#start-btn");
+
+  const departments = (state.quiz.departments && state.quiz.departments.length > 0)
+    ? state.quiz.departments
+    : ["THREE Xross事業部", "THREE With事業部", "れいわキャリア事業部", "コーポレート本部"];
+
+  departments.forEach((dept) => {
+    const btn = el(`
+      <button type="button" class="dept-btn px-3 py-2 rounded-lg border text-sm ${dept === state.respondent.department ? "border-indigo-500 bg-indigo-50 text-indigo-700 font-medium" : "border-slate-300 text-slate-600 hover:border-indigo-300"}">${escapeHtml(dept)}</button>
+    `);
+    btn.onclick = () => {
+      deptInput.value = dept;
+      deptTabs.querySelectorAll(".dept-btn").forEach((b) => {
+        b.classList.remove("border-indigo-500", "bg-indigo-50", "text-indigo-700", "font-medium");
+        b.classList.add("border-slate-300", "text-slate-600");
+      });
+      btn.classList.remove("border-slate-300", "text-slate-600");
+      btn.classList.add("border-indigo-500", "bg-indigo-50", "text-indigo-700", "font-medium");
+      checkValid();
+    };
+    deptTabs.appendChild(btn);
+  });
 
   function checkValid() {
     const emailOk = isAllowedEmail(emailInput.value.trim());
@@ -341,7 +363,6 @@ Views.start = () => {
     startBtn.disabled = !(nameInput.value.trim() && deptInput.value.trim() && emailInput.value.trim() && emailOk);
   }
   nameInput.oninput = checkValid;
-  deptInput.oninput = checkValid;
   emailInput.oninput = checkValid;
   checkValid();
 
@@ -413,6 +434,9 @@ Views.quiz = () => {
       question: q.question,
       selectedIndex: i,
       selectedText: q.choices[i],
+      correctIndex: q.correctIndex,
+      correctText: q.choices[q.correctIndex],
+      explanation: q.explanation || "",
       correct
     });
 
@@ -527,8 +551,8 @@ Views.result = () => {
   else message = "重要なポイントを見直しておきましょう。";
 
   const inner = el(`
-    <div class="fade-in text-center">
-      <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-10">
+    <div class="fade-in">
+      <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-10 text-center">
         <div class="text-4xl mb-4">✅</div>
         <h2 class="text-lg font-bold text-slate-800 mb-1">回答ありがとうございました</h2>
         <p class="text-sm text-slate-500 mb-6">${escapeHtml(state.respondent.name)} 様 (${escapeHtml(state.respondent.department)})</p>
@@ -544,8 +568,29 @@ Views.result = () => {
         </div>
         <p class="text-sm text-slate-600">${message}</p>
       </div>
+
+      <div class="mt-6">
+        <h3 class="text-sm font-semibold text-slate-600 mb-3">回答内容の確認</h3>
+        <div class="space-y-3" id="review-list"></div>
+      </div>
     </div>
   `);
+
+  const reviewList = inner.querySelector("#review-list");
+  state.answers.forEach((a, i) => {
+    reviewList.appendChild(el(`
+      <div class="bg-white rounded-xl border ${a.correct ? "border-slate-200" : "border-red-200"} p-5">
+        <div class="flex items-start justify-between gap-3 mb-2">
+          <p class="text-sm font-medium text-slate-700">問${i + 1}. ${escapeHtml(a.question)}</p>
+          <span class="shrink-0 text-xs font-semibold px-2 py-0.5 rounded-full ${a.correct ? "bg-emerald-50 text-emerald-600" : "bg-red-50 text-red-600"}">${a.correct ? "正解" : "不正解"}</span>
+        </div>
+        <p class="text-sm text-slate-500">あなたの回答: <span class="${a.correct ? "text-emerald-600" : "text-red-600"} font-medium">${escapeHtml(a.selectedText)}</span></p>
+        ${!a.correct ? `<p class="text-sm text-slate-500">正解: <span class="text-emerald-600 font-medium">${escapeHtml(a.correctText)}</span></p>` : ""}
+        ${a.explanation ? `<p class="text-xs text-slate-400 mt-2 leading-relaxed">${escapeHtml(a.explanation)}</p>` : ""}
+      </div>
+    `));
+  });
+
   return pageShell(inner, { hideAdminLink: true });
 };
 
@@ -586,7 +631,7 @@ Views.adminLogin = () => {
       state.admin.password = pw;
       state.admin.data = data;
       state.admin.editQuestions = JSON.parse(JSON.stringify(data.questions));
-      state.admin.settingsDraft = { title: data.title, description: data.description, shuffleQuestions: data.shuffleQuestions, allowedEmailDomains: data.allowedEmailDomains || "", newPassword: "" };
+      state.admin.settingsDraft = { title: data.title, description: data.description, shuffleQuestions: data.shuffleQuestions, allowedEmailDomains: data.allowedEmailDomains || "", departments: (data.departments || []).join(", "), newPassword: "" };
       state.view = "adminDashboard";
       render();
     } catch (err) {
@@ -817,11 +862,12 @@ function renderQuestionsTab() {
             </label>
           </div>
           <textarea data-field="question" rows="2" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm mb-3" placeholder="設問文">${escapeHtml(q.question)}</textarea>
+          <p class="text-xs text-slate-400 mb-1">正しい方の選択肢にラジオボタンを付けてください。</p>
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-3">
-            ${[0, 1, 2, 3].map((ci) => `
+            ${[0, 1].map((ci) => `
               <div class="flex items-center gap-2">
                 <input type="radio" name="correct-${i}" data-choice-idx="${ci}" data-field="correct" ${q.correctIndex === ci ? "checked" : ""}>
-                <input type="text" data-field="choice${ci}" value="${escapeHtml(q.choices[ci] || "")}" class="flex-1 border border-slate-300 rounded-lg px-2 py-1.5 text-sm" placeholder="選択肢${"ABCD"[ci]}">
+                <input type="text" data-field="choice${ci}" value="${escapeHtml(q.choices[ci] || "")}" class="flex-1 border border-slate-300 rounded-lg px-2 py-1.5 text-sm" placeholder="選択肢${ci === 0 ? "1(例: 正しい)" : "2(例: 誤り)"}">
               </div>
             `).join("")}
           </div>
@@ -833,7 +879,7 @@ function renderQuestionsTab() {
       card.querySelector('[data-field="question"]').oninput = (e) => { q.question = e.target.value; };
       card.querySelector('[data-field="explanation"]').oninput = (e) => { q.explanation = e.target.value; };
       card.querySelector('[data-field="active"]').onchange = (e) => { q.active = e.target.checked; };
-      [0, 1, 2, 3].forEach((ci) => {
+      [0, 1].forEach((ci) => {
         card.querySelector(`[data-field="choice${ci}"]`).oninput = (e) => { q.choices[ci] = e.target.value; };
       });
       card.querySelectorAll('[data-field="correct"]').forEach((radio) => {
@@ -869,7 +915,7 @@ function renderQuestionsTab() {
       order: a.editQuestions.length + 1,
       active: true,
       question: "",
-      choices: ["", "", "", ""],
+      choices: ["正しい", "誤り"],
       correctIndex: 0,
       explanation: ""
     });
@@ -926,6 +972,11 @@ function renderSettingsTab() {
           <p class="text-xs text-slate-400 mt-1">ここに設定したドメイン以外のメールアドレスでは、クイズに回答できなくなります。</p>
         </div>
         <div>
+          <label class="block text-sm font-medium text-slate-600 mb-1">部署(事業部)の選択肢(カンマ区切り)</label>
+          <input id="s-departments" type="text" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm" placeholder="例: 営業部, 経理部, 総務部" value="${escapeHtml(d.departments || "")}">
+          <p class="text-xs text-slate-400 mt-1">スタート画面で回答者に選んでもらう部署の一覧です。ここに入力した名前は、回答スプレッドシートのシート名としても使われます。</p>
+        </div>
+        <div>
           <label class="block text-sm font-medium text-slate-600 mb-1">管理者パスワードを変更(空欄で変更なし)</label>
           <input id="s-newpw" type="password" class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm" placeholder="新しいパスワード">
         </div>
@@ -949,6 +1000,7 @@ function renderSettingsTab() {
         description: box.querySelector("#s-desc").value,
         shuffleQuestions: box.querySelector("#s-shuffle").checked,
         allowedEmailDomains: box.querySelector("#s-domains").value,
+        departments: box.querySelector("#s-departments").value,
         newPassword: newPw || undefined
       });
       if (!res.ok) throw new Error(res.error || "保存に失敗しました");
@@ -959,7 +1011,7 @@ function renderSettingsTab() {
       const refreshed = await apiGet({ action: "admin", password: a.password });
       if (refreshed.ok) {
         a.data = refreshed;
-        a.settingsDraft = { title: refreshed.title, description: refreshed.description, shuffleQuestions: refreshed.shuffleQuestions, allowedEmailDomains: refreshed.allowedEmailDomains || "", newPassword: "" };
+        a.settingsDraft = { title: refreshed.title, description: refreshed.description, shuffleQuestions: refreshed.shuffleQuestions, allowedEmailDomains: refreshed.allowedEmailDomains || "", departments: (refreshed.departments || []).join(", "), newPassword: "" };
       }
     } catch (err) {
       msg.classList.remove("text-emerald-600");
